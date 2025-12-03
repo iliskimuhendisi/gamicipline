@@ -1,0 +1,13 @@
+state.json
+
+# Python cache dosyaları
+__pycache__/
+*.pyc
+*.pyo
+
+# Sanal ortam
+venv/
+env/
+
+# VS Code ayarları
+.vscode/
