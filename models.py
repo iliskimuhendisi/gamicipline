@@ -19,6 +19,7 @@ class Stat:
 
 @dataclass
 class Profile:
+    username: str = "Gezgin" # New field for custom name
     xp: int = 0
     level: int = 1
     level_name: str = "Novice"
@@ -126,6 +127,4 @@ class AppState:
     material_goals: Dict[str, MaterialGoal]
     daily_logs: Dict[str, DailyRoutineLog]
     settings: Settings
-    
-    # New field
     task_completions: List[TaskCompletion] = field(default_factory=list)

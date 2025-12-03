@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QStackedWidget, QFrame, QProgressBar, 
     QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QFormLayout, 
     QLineEdit, QComboBox, QSpinBox, QMessageBox, QGroupBox, QGridLayout,
-    QCheckBox, QMenu, QDoubleSpinBox, QTimeEdit, QScrollArea
+    QCheckBox, QMenu, QDoubleSpinBox, QTimeEdit, QScrollArea, QTabWidget
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint, QTime
 from PyQt6.QtGui import QFont, QColor, QAction
@@ -37,6 +37,122 @@ QProgressBar::chunk { background-color: #007acc; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTimeEdit { background-color: #3c3c3c; border: 1px solid #555555; border-radius: 3px; padding: 4px; color: white; }
 QScrollArea { border: none; background-color: transparent; }
 """
+
+class ProfileEditDialog(QDialog):
+    def __init__(self, state: AppState, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.setWindowTitle("Edit Profile & Skills")
+        self.resize(500, 600)
+        self.setStyleSheet("background-color: #252526;")
+        
+        main_layout = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+        
+        # Tab 1: General Info
+        self.tab_general = QWidget()
+        form = QFormLayout(self.tab_general)
+        
+        self.edit_username = QLineEdit(self.state.profile.username)
+        
+        self.spin_xp = QSpinBox()
+        self.spin_xp.setRange(0, 9999999)
+        self.spin_xp.setValue(self.state.profile.xp)
+        self.spin_xp.valueChanged.connect(self.on_xp_changed)
+        
+        self.spin_level = QSpinBox()
+        self.spin_level.setRange(1, 1000)
+        self.spin_level.setValue(self.state.profile.level)
+        self.spin_level.valueChanged.connect(self.on_level_changed)
+        
+        self.spin_streak = QSpinBox()
+        self.spin_streak.setRange(0, 3650)
+        self.spin_streak.setValue(self.state.profile.streak_days)
+        
+        self.spin_freezes = QSpinBox()
+        self.spin_freezes.setRange(0, 100)
+        self.spin_freezes.setValue(self.state.profile.streak_freezes)
+        
+        form.addRow("Username:", self.edit_username)
+        form.addRow("Total XP:", self.spin_xp)
+        form.addRow("Level (Approx):", self.spin_level)
+        form.addRow("Streak Days:", self.spin_streak)
+        form.addRow("Streak Freezes:", self.spin_freezes)
+        
+        self.tabs.addTab(self.tab_general, "General")
+        
+        # Tab 2: Skills (Stats)
+        self.tab_skills = QWidget()
+        skills_layout = QVBoxLayout(self.tab_skills)
+        
+        self.skills_table = QTableWidget()
+        self.skills_table.setColumnCount(2)
+        self.skills_table.setHorizontalHeaderLabels(["Skill Name", "Level"])
+        self.skills_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.skills_table.verticalHeader().setVisible(False)
+        skills_layout.addWidget(self.skills_table)
+        
+        self.load_skills_table()
+        
+        self.tabs.addTab(self.tab_skills, "Skills")
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_save = QPushButton("Save All Changes")
+        btn_save.setProperty("class", "ActionButton")
+        btn_save.clicked.connect(self.save_all)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(btn_cancel)
+        btn_layout.addWidget(btn_save)
+        main_layout.addLayout(btn_layout)
+
+    def on_xp_changed(self, val):
+        # Update level approx
+        lvl = 1 + (val // 500)
+        self.spin_level.blockSignals(True)
+        self.spin_level.setValue(lvl)
+        self.spin_level.blockSignals(False)
+
+    def on_level_changed(self, val):
+        # Update XP to min for that level
+        xp = (val - 1) * 500
+        self.spin_xp.blockSignals(True)
+        self.spin_xp.setValue(xp)
+        self.spin_xp.blockSignals(False)
+
+    def load_skills_table(self):
+        self.skills_table.setRowCount(len(self.state.stats))
+        for row, (name, stat) in enumerate(self.state.stats.items()):
+            self.skills_table.setItem(row, 0, QTableWidgetItem(name.title()))
+            
+            spin = QSpinBox()
+            spin.setRange(1, 1000)
+            spin.setValue(stat.level())
+            # Store stat name in the widget for retrieval
+            spin.setProperty("stat_name", name)
+            self.skills_table.setCellWidget(row, 1, spin)
+
+    def save_all(self):
+        # 1. Save General
+        logic.update_profile_general(
+            self.state,
+            self.edit_username.text(),
+            self.spin_xp.value(),
+            self.spin_streak.value(),
+            self.spin_freezes.value()
+        )
+        
+        # 2. Save Skills
+        for row in range(self.skills_table.rowCount()):
+            spin = self.skills_table.cellWidget(row, 1)
+            stat_name = spin.property("stat_name")
+            new_level = spin.value()
+            logic.update_stat_level(self.state, stat_name, new_level)
+            
+        self.accept()
 
 class TaskDialog(QDialog):
     """Unified Dialog for Adding or Editing Tasks"""
@@ -79,7 +195,6 @@ class TaskDialog(QDialog):
             cb = QCheckBox(name)
             if task and task.custom_weekdays and i in task.custom_weekdays:
                 cb.setChecked(True)
-            # UX Improvement: Clicking a day auto-selects the Weekdays mode
             cb.toggled.connect(self.on_day_checked)
             self.days_checks.append(cb)
             h_days.addWidget(cb)
@@ -127,7 +242,6 @@ class TaskDialog(QDialog):
         self.toggle_custom_fields(self.recurrence_input.currentText())
 
     def on_day_checked(self):
-        # Helper to ensure parent checkbox is checked if any day is selected
         if self.sender().isChecked():
             self.weekdays_box.setChecked(True)
             self.every_n_box.setChecked(False)
@@ -165,18 +279,28 @@ class DashboardPage(QWidget):
         main_layout = QVBoxLayout(self)
         profile_group = QGroupBox("Profile Overview")
         profile_layout = QGridLayout()
+        
         self.lbl_level = QLabel("Level ??")
         self.lbl_level.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        
+        # New: Show username
+        self.lbl_username = QLabel("User")
+        self.lbl_username.setStyleSheet("color: #aaaaaa; font-style: italic;")
+        
         self.lbl_xp = QLabel("XP: 0")
         self.lbl_streak = QLabel("Streak: 0 🔥")
+        
         self.xp_bar = QProgressBar()
         self.xp_bar.setRange(0, 500)
         self.xp_bar.setTextVisible(True)
         self.xp_bar.setFormat("%v / 500 XP to next level")
+        
         profile_layout.addWidget(self.lbl_level, 0, 0)
-        profile_layout.addWidget(self.lbl_xp, 0, 1)
-        profile_layout.addWidget(self.lbl_streak, 0, 2)
-        profile_layout.addWidget(self.xp_bar, 1, 0, 1, 3)
+        profile_layout.addWidget(self.lbl_username, 0, 1) # Added username
+        profile_layout.addWidget(self.lbl_xp, 1, 0)
+        profile_layout.addWidget(self.lbl_streak, 1, 1)
+        profile_layout.addWidget(self.xp_bar, 2, 0, 1, 2)
+        
         profile_group.setLayout(profile_layout)
         main_layout.addWidget(profile_group)
 
@@ -186,11 +310,12 @@ class DashboardPage(QWidget):
 
         stats_group = QGroupBox("Key Skills")
         stats_layout = QGridLayout()
+        # Ensure we always show something, pick first 4 or default
         target_stats = ["yazılım", "yazarlık", "liderlik", "içerik üretme"]
         row, col = 0, 0
         self.stat_widgets = {} 
         for name in target_stats:
-            _ = self.state.stats.get(name)
+            _ = self.state.stats.get(name) # ensure exists logic handles this if missing by defaulting
             frame = QFrame()
             frame.setStyleSheet("background-color: #2d2d2d; border-radius: 5px; padding: 5px;")
             frame_layout = QVBoxLayout(frame)
@@ -215,6 +340,7 @@ class DashboardPage(QWidget):
     def refresh(self):
         p = self.state.profile
         self.lbl_level.setText(f"{p.level_name} (Lvl {p.level})")
+        self.lbl_username.setText(f"User: {p.username}")
         self.lbl_xp.setText(f"Total XP: {p.xp}")
         self.lbl_streak.setText(f"Streak: {p.streak_days} 🔥 (Frz: {p.streak_freezes})")
         self.xp_bar.setValue(p.xp % 500)
@@ -688,10 +814,94 @@ class RoutinesPage(QWidget):
         storage.save_state(self.state)
         QMessageBox.information(self, "Success", msg)
 
+class ProfilePage(QWidget):
+    def __init__(self, state: AppState, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Header
+        header_layout = QHBoxLayout()
+        self.lbl_header = QLabel("My Profile")
+        self.lbl_header.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        
+        btn_edit = QPushButton("Edit Profile")
+        btn_edit.setProperty("class", "ActionButton")
+        btn_edit.clicked.connect(self.open_edit_dialog)
+        
+        header_layout.addWidget(self.lbl_header)
+        header_layout.addStretch()
+        header_layout.addWidget(btn_edit)
+        layout.addLayout(header_layout)
+        
+        # Profile Details Card
+        details_group = QGroupBox("User Details")
+        details_layout = QFormLayout()
+        
+        self.lbl_username = QLabel()
+        self.lbl_level = QLabel()
+        self.lbl_xp = QLabel()
+        self.lbl_streak = QLabel()
+        
+        details_layout.addRow("Username:", self.lbl_username)
+        details_layout.addRow("Level:", self.lbl_level)
+        details_layout.addRow("Total XP:", self.lbl_xp)
+        details_layout.addRow("Streak:", self.lbl_streak)
+        
+        details_group.setLayout(details_layout)
+        layout.addWidget(details_group)
+        
+        # Skills Card
+        skills_group = QGroupBox("Skills & Stats")
+        self.skills_layout = QVBoxLayout()
+        skills_group.setLayout(self.skills_layout)
+        layout.addWidget(skills_group)
+        
+        layout.addStretch()
+        self.refresh()
+
+    def refresh(self):
+        p = self.state.profile
+        self.lbl_username.setText(p.username)
+        self.lbl_level.setText(f"{p.level} ({p.level_name})")
+        self.lbl_xp.setText(f"{p.xp:,}")
+        self.lbl_streak.setText(f"{p.streak_days} days (Freezes: {p.streak_freezes})")
+        
+        # Refresh Skills List
+        # Clear layout
+        while self.skills_layout.count():
+            item = self.skills_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Add bars
+        for name, stat in self.state.stats.items():
+            h = QHBoxLayout()
+            lbl = QLabel(f"{name.title()} (Lvl {stat.level()})")
+            lbl.setFixedWidth(150)
+            
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(int(stat.progress_to_next_level() * 100))
+            bar.setTextVisible(True)
+            
+            h.addWidget(lbl)
+            h.addWidget(bar)
+            self.skills_layout.addLayout(h)
+
+    def open_edit_dialog(self):
+        dlg = ProfileEditDialog(self.state, self)
+        if dlg.exec():
+            self.refresh()
+            storage.save_state(self.state)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Life Gamification App v3.2")
+        self.setWindowTitle("Life Gamification App v3.3")
         self.resize(1100, 750)
         self.state = storage.load_state()
         self.init_ui()
@@ -719,24 +929,28 @@ class MainWindow(QMainWindow):
         self.update_date_label()
 
         self.btn_dash = self.create_nav_button("Dashboard")
+        self.btn_profile = self.create_nav_button("Profile") # NEW
         self.btn_tasks = self.create_nav_button("Tasks")
         self.btn_routines = self.create_nav_button("Routines")
-        self.btn_book = self.create_nav_button("Book") # NEW Button
+        self.btn_book = self.create_nav_button("Book")
         
         side_layout.addWidget(self.btn_dash)
+        side_layout.addWidget(self.btn_profile) # NEW
         side_layout.addWidget(self.btn_tasks)
         side_layout.addWidget(self.btn_routines)
         side_layout.addWidget(self.btn_book)
         side_layout.addStretch()
-        side_layout.addWidget(QLabel("v3.2 Book Tab"))
+        side_layout.addWidget(QLabel("v3.3 Profile Edit"))
         
         self.stack = QStackedWidget()
         self.page_dash = DashboardPage(self.state)
+        self.page_profile = ProfilePage(self.state) # NEW
         self.page_tasks = TasksPage(self.state, self.handle_task_action)
         self.page_routines = RoutinesPage(self.state)
-        self.page_book = BookPage(self.state) # NEW Page
+        self.page_book = BookPage(self.state)
         
         self.stack.addWidget(self.page_dash)
+        self.stack.addWidget(self.page_profile) # NEW
         self.stack.addWidget(self.page_tasks)
         self.stack.addWidget(self.page_routines)
         self.stack.addWidget(self.page_book)
@@ -745,9 +959,10 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.stack)
         
         self.btn_dash.clicked.connect(lambda: self.switch_page(0))
-        self.btn_tasks.clicked.connect(lambda: self.switch_page(1))
-        self.btn_routines.clicked.connect(lambda: self.switch_page(2))
-        self.btn_book.clicked.connect(lambda: self.switch_page(3))
+        self.btn_profile.clicked.connect(lambda: self.switch_page(1)) # NEW
+        self.btn_tasks.clicked.connect(lambda: self.switch_page(2))
+        self.btn_routines.clicked.connect(lambda: self.switch_page(3))
+        self.btn_book.clicked.connect(lambda: self.switch_page(4))
         self.btn_dash.setChecked(True)
 
     def update_date_label(self):
@@ -771,16 +986,15 @@ class MainWindow(QMainWindow):
     def switch_page(self, index):
         self.stack.setCurrentIndex(index)
         if index == 0: self.page_dash.refresh()
-        elif index == 1: self.page_tasks.refresh()
-        elif index == 2: self.page_routines.refresh()
-        elif index == 3: self.page_book.refresh()
+        elif index == 1: self.page_profile.refresh() # NEW
+        elif index == 2: self.page_tasks.refresh()
+        elif index == 3: self.page_routines.refresh()
+        elif index == 4: self.page_book.refresh()
 
     def on_tick(self):
         self.page_dash.update_active_task_label()
-        if self.stack.currentIndex() == 1:
+        if self.stack.currentIndex() == 2: # Check index carefully
             self.page_tasks.update_timers()
-        # Also refresh date occasionally (e.g. at midnight rollover), but on every second is fine too or just on startup
-        # To be safe for long running app:
         self.update_date_label()
 
     def handle_task_action(self, task_id: str):

@@ -4,7 +4,7 @@ from typing import Optional, List
 
 from models import (
     AppState, Profile, TaskTemplate, TimerSession, 
-    AmcaAction, DailyRoutineLog, Transaction, TaskCompletion, BookProject
+    AmcaAction, DailyRoutineLog, Transaction, TaskCompletion, BookProject, Stat
 )
 
 # --- Leveling Logic ---
@@ -19,8 +19,28 @@ def get_level_name(level: int) -> str:
     return LEVEL_NAMES[index]
 
 def recalc_level_from_xp(profile: Profile) -> None:
+    # Formula: Level 1 = 0-499 XP. Level 2 = 500-999 XP, etc.
     profile.level = 1 + (profile.xp // 500)
     profile.level_name = get_level_name(profile.level)
+
+# --- Profile Management ---
+def update_profile_general(state: AppState, username: str, xp: int, streak: int, freezes: int) -> None:
+    state.profile.username = username
+    state.profile.xp = xp
+    state.profile.streak_days = streak
+    state.profile.streak_freezes = freezes
+    # Recalculate level based on new XP
+    recalc_level_from_xp(state.profile)
+
+def update_stat_level(state: AppState, stat_name: str, new_level: int) -> None:
+    if stat_name not in state.stats:
+        state.stats[stat_name] = Stat(name=stat_name)
+    
+    # 1 Level = 10 hours = 36000 seconds
+    # If setting to Level 1, seconds = 0. Level 2, seconds = 36000.
+    target_seconds = (new_level - 1) * 36000
+    if target_seconds < 0: target_seconds = 0
+    state.stats[stat_name].total_seconds = target_seconds
 
 # --- Task Definition ---
 def add_task_definition(
@@ -194,22 +214,15 @@ def update_zikr_target(state: AppState, new_target: int) -> None:
     state.settings.zikr_daily_target = new_target
 
 def set_daily_income(state: AppState, log_date: date, total_amount: float) -> None:
-    """Sets the daily income to a specific total value, adjusting wallet balance by the difference."""
     log = ensure_daily_log(state, log_date)
-    
     current_log_income = log.income_amount
     delta = total_amount - current_log_income
     
-    if delta == 0:
-        return
+    if delta == 0: return
 
-    # Update Log
     log.income_amount = total_amount
-    
-    # Update Wallet
     state.wallet.balance += delta
     
-    # Add Transaction (Audit trail for the adjustment)
     t_id = str(uuid.uuid4())
     txn = Transaction(
         id=t_id,
@@ -249,7 +262,7 @@ def apply_wake_times(state: AppState, log_date: date, wake_target_time: str, wak
         else:
             log.wake_penalty = 0.0
     except ValueError:
-        pass # Handle invalid time formats gracefully
+        pass
 
 def update_streak_for_date(state: AppState, log_date: date) -> None:
     d_str = log_date.isoformat()
