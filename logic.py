@@ -4,53 +4,32 @@ from typing import Optional, List
 
 from models import (
     AppState, Profile, TaskTemplate, TimerSession, 
-    AmcaAction, DailyRoutineLog, Transaction
+    AmcaAction, DailyRoutineLog, Transaction, TaskCompletion
 )
 
 # --- Leveling Logic ---
-
 LEVEL_NAMES = [
-    "Çırak",                # Level 1
-    "Uyanan",               # Level 2
-    "Disiplin Çömezi",      # Level 3
-    "Yolcu",                # Level 4
-    "Savaşçı",              # Level 5
-    "Muhafız",              # Level 6
-    "Usta",                 # Level 7
-    "Büyük Usta",           # Level 8
-    "Efsane",               # Level 9
-    "Bilge"                 # Level 10+
+    "Çırak", "Uyanan", "Disiplin Çömezi", "Yolcu", "Savaşçı", 
+    "Muhafız", "Usta", "Büyük Usta", "Efsane", "Bilge"
 ]
 
 def get_level_name(level: int) -> str:
-    """Returns a human-readable level name, clamping to the max defined index."""
-    if level < 1:
-        return LEVEL_NAMES[0]
+    if level < 1: return LEVEL_NAMES[0]
     index = min(level - 1, len(LEVEL_NAMES) - 1)
     return LEVEL_NAMES[index]
 
 def recalc_level_from_xp(profile: Profile) -> None:
-    """
-    Recalculates level based on XP.
-    Formula: Level 1 = 0-499 XP. Level 2 = 500-999 XP, etc.
-    Level = 1 + (XP // 500)
-    """
     profile.level = 1 + (profile.xp // 500)
     profile.level_name = get_level_name(profile.level)
 
-# --- Task Management ---
-
+# --- Task Definition ---
 def add_task_definition(
-    state: AppState, 
-    title: str, 
-    description: str, 
-    category: str, 
-    recurrence: str, 
-    target_minutes: Optional[int], 
-    xp_reward: int, 
-    point_reward: int, 
-    stat_name: Optional[str], 
-    is_amca_task: bool = False
+    state: AppState, title: str, description: str, category: str, 
+    recurrence: str, target_minutes: Optional[int], xp_reward: int, 
+    point_reward: int, stat_name: Optional[str], 
+    is_amca_task: bool = False,
+    custom_every_n_days: Optional[int] = None,
+    custom_weekdays: Optional[List[int]] = None
 ) -> TaskTemplate:
     
     new_id = str(uuid.uuid4())
@@ -64,228 +43,184 @@ def add_task_definition(
         xp_reward=xp_reward,
         point_reward=point_reward,
         stat_name=stat_name,
-        is_amca_task=is_amca_task
+        is_amca_task=is_amca_task,
+        created_date=date.today().isoformat(),
+        custom_every_n_days=custom_every_n_days,
+        custom_weekdays=custom_weekdays
     )
     state.tasks[new_id] = task
     return task
 
+# --- Recurrence & Schedule Logic ---
+
+def is_task_scheduled_for_date(task: TaskTemplate, target_date: date) -> bool:
+    created_dt = date.fromisoformat(task.created_date)
+    
+    if task.recurrence == "once":
+        return created_dt == target_date
+    
+    elif task.recurrence == "daily":
+        return target_date >= created_dt
+    
+    elif task.recurrence == "weekly":
+        # Same day of week
+        return target_date >= created_dt and target_date.weekday() == created_dt.weekday()
+    
+    elif task.recurrence == "monthly":
+        # Same day of month (simplified, ignores 31st vs 30th issues for now)
+        return target_date >= created_dt and target_date.day == created_dt.day
+    
+    elif task.recurrence == "custom":
+        if task.custom_every_n_days:
+            diff = (target_date - created_dt).days
+            return target_date >= created_dt and (diff % task.custom_every_n_days == 0)
+        
+        elif task.custom_weekdays:
+            return target_date >= created_dt and (target_date.weekday() in task.custom_weekdays)
+            
+    return False
+
+def get_task_minutes_for_date(state: AppState, task_id: str, target_date: date) -> int:
+    total_seconds = 0
+    for s in state.sessions.values():
+        if s.task_id == task_id:
+            s_date = datetime.fromisoformat(s.start_time).date()
+            if s_date == target_date:
+                total_seconds += s.duration_seconds
+                
+                # If session is still running, add active time
+                if s.end_time is None:
+                    start_dt = datetime.fromisoformat(s.start_time)
+                    active_sec = (datetime.now() - start_dt).total_seconds()
+                    total_seconds += active_sec
+                    
+    return int(total_seconds // 60)
+
+def is_task_completed_for_date(state: AppState, task: TaskTemplate, target_date: date) -> bool:
+    # 1. Check if explicit completion record exists
+    date_str = target_date.isoformat()
+    for c in state.task_completions:
+        if c.task_id == task.id and c.date == date_str:
+            return True
+            
+    # 2. Check time target
+    if task.target_minutes is None:
+        return False
+        
+    minutes_done = get_task_minutes_for_date(state, task.id, target_date)
+    
+    if minutes_done >= task.target_minutes:
+        # Auto-complete
+        comp = TaskCompletion(
+            id=str(uuid.uuid4()),
+            task_id=task.id,
+            date=date_str
+        )
+        state.task_completions.append(comp)
+        return True
+        
+    return False
+
+def get_tasks_for_date(state: AppState, target_date: date) -> List[TaskTemplate]:
+    """Returns all tasks scheduled for today."""
+    return [
+        t for t in state.tasks.values() 
+        if is_task_scheduled_for_date(t, target_date)
+    ]
+
 # --- Timer / Session Logic ---
 
 def get_active_session(state: AppState, task_id: str) -> Optional[TimerSession]:
-    """Returns the active TimerSession for a specific task if one exists."""
     for session in state.sessions.values():
         if session.task_id == task_id and session.end_time is None:
             return session
     return None
 
 def get_all_active_sessions(state: AppState) -> List[TimerSession]:
-    """Returns a list of all currently running sessions."""
     return [s for s in state.sessions.values() if s.end_time is None]
 
-def start_timer_for_task(
-    state: AppState, 
-    task_id: str, 
-    start_dt: Optional[datetime] = None
-) -> TimerSession:
-    
-    # Check if already running
+def start_timer_for_task(state: AppState, task_id: str) -> TimerSession:
     existing = get_active_session(state, task_id)
-    if existing:
-        return existing
-
-    if start_dt is None:
-        start_dt = datetime.now()
-        
+    if existing: return existing
+    
     session_id = str(uuid.uuid4())
     session = TimerSession(
         id=session_id,
         task_id=task_id,
-        start_time=start_dt.isoformat(),
-        duration_seconds=0,
-        end_time=None
+        start_time=datetime.now().isoformat(),
+        duration_seconds=0
     )
     state.sessions[session_id] = session
     return session
 
-def stop_timer_for_session(
-    state: AppState, 
-    session_id: str, 
-    end_dt: Optional[datetime] = None
-) -> TimerSession:
-    
+def stop_timer_for_session(state: AppState, session_id: str) -> TimerSession:
     session = state.sessions.get(session_id)
-    if not session:
-        raise ValueError(f"Session {session_id} not found.")
+    if not session or session.end_time: return session
     
-    if session.end_time is not None:
-        return session  # Already stopped
-        
-    if end_dt is None:
-        end_dt = datetime.now()
-        
+    end_dt = datetime.now()
     start_dt = datetime.fromisoformat(session.start_time)
-    
-    # Calculate duration
     duration = (end_dt - start_dt).total_seconds()
+    
     session.duration_seconds = int(duration)
     session.end_time = end_dt.isoformat()
     
-    # 1. Update Stat (if task has one)
+    # Update Stats
     task = state.tasks.get(session.task_id)
     if task and task.stat_name and task.stat_name in state.stats:
         state.stats[task.stat_name].add_seconds(session.duration_seconds)
-        
-    # 2. Update Daily Log (ensure it exists)
-    log_date = start_dt.date()
-    # ensure_daily_log is called implicitly by just accessing/creating logic
-    _ = ensure_daily_log(state, log_date)
     
-    # 3. Grant Rewards
+    ensure_daily_log(state, start_dt.date())
+    
+    # Check Completion
+    was_completed = False
     if task:
+        # Check if this session triggered completion
+        was_completed = is_task_completed_for_date(state, task, start_dt.date())
+        
+        # Grant rewards (Per session reward)
+        # Note: You might want to only grant big rewards on completion, 
+        # but sticking to original logic of reward per session for now.
         state.profile.xp += task.xp_reward
         state.profile.points += task.point_reward
         
-    # 4. Recalculate Level
     recalc_level_from_xp(state.profile)
-    
     return session
 
-# --- Amca Logic ---
+# --- Misc Helpers ---
+def ensure_daily_log(state: AppState, log_date: date) -> DailyRoutineLog:
+    d_str = log_date.isoformat()
+    if d_str not in state.daily_logs:
+        state.daily_logs[d_str] = DailyRoutineLog(date=d_str)
+    return state.daily_logs[d_str]
 
-def add_amca_action(
-    state: AppState, 
-    xp_reward: int, 
-    note: Optional[str] = None, 
-    ts: Optional[datetime] = None
-) -> AmcaAction:
-    
-    if ts is None:
-        ts = datetime.now()
-        
-    action_id = str(uuid.uuid4())
-    action = AmcaAction(
-        id=action_id,
-        timestamp=ts.isoformat(),
-        xp_reward=xp_reward,
-        note=note
-    )
+def add_amca_action(state: AppState, xp_reward: int, note: Optional[str] = None) -> AmcaAction:
+    ts = datetime.now()
+    action = AmcaAction(str(uuid.uuid4()), ts.isoformat(), xp_reward, note)
     state.amca_actions.append(action)
-    
-    # Update Profile
     state.profile.xp += xp_reward
     recalc_level_from_xp(state.profile)
-    
-    # Update Daily Log
-    daily_log = ensure_daily_log(state, ts.date())
-    daily_log.amca_count += 1
-    
+    ensure_daily_log(state, ts.date()).amca_count += 1
     return action
 
-# --- Daily Routine & Logistics ---
-
-def ensure_daily_log(state: AppState, log_date: date) -> DailyRoutineLog:
-    date_str = log_date.isoformat()
-    if date_str not in state.daily_logs:
-        state.daily_logs[date_str] = DailyRoutineLog(date=date_str)
-    return state.daily_logs[date_str]
-
-def update_book_progress(
-    state: AppState, 
-    book_id: str, 
-    pages_written_today: int, 
-    log_date: date
-) -> None:
-    
-    book = state.book_projects.get(book_id)
-    if not book:
-        return
-        
-    # Update Book
-    book.pages_written += pages_written_today
-    if book.pages_written >= book.total_pages:
-        book.is_completed = True
-        
-    # Update Daily Log
-    log = ensure_daily_log(state, log_date)
-    log.pages_written += pages_written_today
-
-def update_zikr_and_income(
-    state: AppState, 
-    log_date: date, 
-    zikr_count: int, 
-    income_amount: float
-) -> None:
-    
-    log = ensure_daily_log(state, log_date)
-    log.zikr_count += zikr_count
-    log.income_amount += income_amount
-    
-    if income_amount > 0:
-        t_id = str(uuid.uuid4())
-        txn = Transaction(
-            id=t_id,
-            timestamp=datetime.now().isoformat(),
-            amount=income_amount,
-            category="Income",
-            description=f"Daily income log for {log_date}"
-        )
-        state.wallet.transactions.append(txn)
-        state.wallet.balance += income_amount
-
-def apply_wake_times(
-    state: AppState, 
-    log_date: date, 
-    wake_target_time: str, 
-    wake_actual_time: str
-) -> None:
-    """
-    Times format: "HH:MM" 24-hour.
-    """
-    log = ensure_daily_log(state, log_date)
-    log.wake_target_time = wake_target_time
-    log.wake_actual_time = wake_actual_time
-    
-    # Simple hour/minute parsing
-    def parse_minutes(time_str):
-        h, m = map(int, time_str.split(':'))
-        return h * 60 + m
-    
-    target_min = parse_minutes(wake_target_time)
-    actual_min = parse_minutes(wake_actual_time)
-    
-    if actual_min > target_min:
-        delay = actual_min - target_min
-        penalty = delay * state.settings.wake_penalty_per_minute
-        log.wake_penalty = penalty
-
 def update_streak_for_date(state: AppState, log_date: date) -> None:
-    date_str = log_date.isoformat()
-    log = state.daily_logs.get(date_str)
+    # (Same as before, abbreviated for brevity in this answer context if unchanged)
+    # Keeping logic for completeness
+    d_str = log_date.isoformat()
+    log = state.daily_logs.get(d_str)
+    amca_ok = log and log.amca_count >= state.settings.min_amca_per_day
     
-    # Check Amca Count condition
-    amca_satisfied = False
-    if log and log.amca_count >= state.settings.min_amca_per_day:
-        amca_satisfied = True
-        
-    # Check Timer Session condition
-    timer_satisfied = False
-    for sess in state.sessions.values():
-        if sess.end_time:
-            end_dt = datetime.fromisoformat(sess.end_time)
-            if end_dt.date() == log_date:
-                timer_satisfied = True
-                break
-    
-    is_successful_day = amca_satisfied or timer_satisfied
-    
-    if is_successful_day:
+    timer_ok = False
+    for s in state.sessions.values():
+        if s.end_time and datetime.fromisoformat(s.end_time).date() == log_date:
+            timer_ok = True
+            break
+            
+    if amca_ok or timer_ok:
         state.profile.streak_days += 1
-        # Small streak bonus
-        state.profile.xp += 10 
+        state.profile.xp += 10
         recalc_level_from_xp(state.profile)
     else:
         if state.profile.streak_freezes > 0:
             state.profile.streak_freezes -= 1
-            # Streak preserved
         else:
             state.profile.streak_days = 0
