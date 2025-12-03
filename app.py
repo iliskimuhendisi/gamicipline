@@ -79,6 +79,8 @@ class TaskDialog(QDialog):
             cb = QCheckBox(name)
             if task and task.custom_weekdays and i in task.custom_weekdays:
                 cb.setChecked(True)
+            # UX Improvement: Clicking a day auto-selects the Weekdays mode
+            cb.toggled.connect(self.on_day_checked)
             self.days_checks.append(cb)
             h_days.addWidget(cb)
         self.custom_layout.addLayout(h_days)
@@ -123,6 +125,12 @@ class TaskDialog(QDialog):
         btn_layout.addWidget(save_btn)
         layout.addRow(btn_layout)
         self.toggle_custom_fields(self.recurrence_input.currentText())
+
+    def on_day_checked(self):
+        # Helper to ensure parent checkbox is checked if any day is selected
+        if self.sender().isChecked():
+            self.weekdays_box.setChecked(True)
+            self.every_n_box.setChecked(False)
 
     def toggle_custom_fields(self, text):
         self.custom_group.setVisible(text == "custom")
@@ -495,10 +503,10 @@ class RoutinesPage(QWidget):
     def init_ui(self):
         # Scroll Area setup
         outer_layout = QVBoxLayout(self)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content_widget = QWidget()
-        self.layout = QVBoxLayout(content_widget)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.content_widget = QWidget()
+        self.layout = QVBoxLayout(self.content_widget)
         
         # 1. Book Project (Creation Only)
         self.book_group = QGroupBox("Create New Book Project")
@@ -507,7 +515,7 @@ class RoutinesPage(QWidget):
         self.layout.addWidget(self.book_group)
 
         # 2. Zikr
-        zikr_group = QGroupBox("Daily Zikr")
+        self.zikr_group = QGroupBox("Daily Zikr")
         zikr_layout = QFormLayout()
         
         self.lbl_zikr_target = QLabel()
@@ -528,11 +536,11 @@ class RoutinesPage(QWidget):
         zikr_layout.addRow("Set New Target:", h_target)
         zikr_layout.addRow("Count Today:", self.spin_zikr)
         zikr_layout.addRow(btn_zikr_save)
-        zikr_group.setLayout(zikr_layout)
-        self.layout.addWidget(zikr_group)
+        self.zikr_group.setLayout(zikr_layout)
+        self.layout.addWidget(self.zikr_group)
 
         # 3. Daily Income
-        income_group = QGroupBox("Daily Income")
+        self.income_group = QGroupBox("Daily Income")
         income_layout = QFormLayout()
         self.lbl_income_target = QLabel()
         self.spin_income = QDoubleSpinBox(); self.spin_income.setRange(0, 1000000)
@@ -541,11 +549,11 @@ class RoutinesPage(QWidget):
         income_layout.addRow(self.lbl_income_target)
         income_layout.addRow("Total Income Today:", self.spin_income)
         income_layout.addRow(btn_income_save)
-        income_group.setLayout(income_layout)
-        self.layout.addWidget(income_group)
+        self.income_group.setLayout(income_layout)
+        self.layout.addWidget(self.income_group)
 
         # 4. Amca Actions
-        amca_group = QGroupBox("Amca Actions")
+        self.amca_group = QGroupBox("Amca Actions")
         amca_layout = QFormLayout()
         self.lbl_amca_today = QLabel()
         self.spin_amca_xp = QSpinBox(); self.spin_amca_xp.setValue(10)
@@ -554,11 +562,11 @@ class RoutinesPage(QWidget):
         amca_layout.addRow(self.lbl_amca_today)
         amca_layout.addRow("XP Reward:", self.spin_amca_xp)
         amca_layout.addRow(btn_amca_add)
-        amca_group.setLayout(amca_layout)
-        self.layout.addWidget(amca_group)
+        self.amca_group.setLayout(amca_layout)
+        self.layout.addWidget(self.amca_group)
 
         # 5. Wake Time
-        wake_group = QGroupBox("Wake Time")
+        self.wake_group = QGroupBox("Wake Time")
         wake_layout = QFormLayout()
         self.time_target = QTimeEdit(); self.time_target.setDisplayFormat("HH:mm")
         self.time_actual = QTimeEdit(); self.time_actual.setDisplayFormat("HH:mm")
@@ -569,12 +577,12 @@ class RoutinesPage(QWidget):
         wake_layout.addRow("Actual Time:", self.time_actual)
         wake_layout.addRow(self.lbl_wake_penalty)
         wake_layout.addRow(btn_wake_save)
-        wake_group.setLayout(wake_layout)
-        self.layout.addWidget(wake_group)
+        self.wake_group.setLayout(wake_layout)
+        self.layout.addWidget(self.wake_group)
         
         self.layout.addStretch()
-        scroll.setWidget(content_widget)
-        outer_layout.addWidget(scroll)
+        self.scroll.setWidget(self.content_widget)
+        outer_layout.addWidget(self.scroll)
 
     def refresh(self):
         today = date.today()
@@ -703,6 +711,13 @@ class MainWindow(QMainWindow):
         side_layout = QVBoxLayout(self.sidebar)
         side_layout.setContentsMargins(0, 20, 0, 20)
         
+        # Date Display Label
+        self.lbl_date = QLabel()
+        self.lbl_date.setStyleSheet("color: #007acc; font-weight: bold; font-size: 14px; padding-left: 10px;")
+        side_layout.addWidget(self.lbl_date)
+        
+        self.update_date_label()
+
         self.btn_dash = self.create_nav_button("Dashboard")
         self.btn_tasks = self.create_nav_button("Tasks")
         self.btn_routines = self.create_nav_button("Routines")
@@ -735,6 +750,17 @@ class MainWindow(QMainWindow):
         self.btn_book.clicked.connect(lambda: self.switch_page(3))
         self.btn_dash.setChecked(True)
 
+    def update_date_label(self):
+        now = datetime.now()
+        day_map = {
+            "Monday": "Pazartesi", "Tuesday": "Salı", "Wednesday": "Çarşamba",
+            "Thursday": "Perşembe", "Friday": "Cuma", "Saturday": "Cumartesi", "Sunday": "Pazar"
+        }
+        day_en = now.strftime("%A")
+        day_tr = day_map.get(day_en, day_en)
+        date_str = now.strftime("%Y-%m-%d")
+        self.lbl_date.setText(f"{date_str}\n{day_tr}")
+
     def create_nav_button(self, text):
         btn = QPushButton(text)
         btn.setProperty("class", "NavButton")
@@ -753,6 +779,9 @@ class MainWindow(QMainWindow):
         self.page_dash.update_active_task_label()
         if self.stack.currentIndex() == 1:
             self.page_tasks.update_timers()
+        # Also refresh date occasionally (e.g. at midnight rollover), but on every second is fine too or just on startup
+        # To be safe for long running app:
+        self.update_date_label()
 
     def handle_task_action(self, task_id: str):
         active = logic.get_active_session(self.state, task_id)
